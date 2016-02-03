@@ -113,8 +113,10 @@ def load_conll_char(path, train, vocab_word, vocab_char=Vocab(), vocab_tag=Vocab
     if register:
 #        vocab_word.add_word(EOS)
         vocab_word.add_word(UNK)
+
+    if train:
 #        vocab_char.add_word(EOS)
-#        vocab_char.add_word(UNK)
+        vocab_char.add_word(UNK)
 
     with open(path) as f:
         wts = []
@@ -235,19 +237,23 @@ def convert_into_ids(corpus, vocab_word, vocab_char, vocab_tag):
             t_id = vocab_tag.get_id(t)
 
             if w_id is None:
-                """ID for unknown word"""
                 w_id = vocab_word.get_id(UNK)
-            assert w_id is not None
 
-            if t_id is None:
-                """ID for unknown tag"""
-                t_id = -1
+            assert w_id is not None
+            assert t_id is not None
+
+            for c in w:
+                c_id = vocab_char.get_id(c)
+
+                if c_id is None:
+                    c_id = vocab_char.get_id(UNK)
+                assert c_id is not None
+                c_ids.append(c_id)
 
             w_ids.append(w_id)
-            c_ids.extend([vocab_char.get_id(c) for c in w])
+            t_ids.append(t_id)
             b += len(w)
             bs.append(b)
-            t_ids.append(t_id)
 
         id_corpus_w.append(np.asarray(w_ids, dtype='int32'))
         id_corpus_c.append(np.asarray(c_ids, dtype='int32'))

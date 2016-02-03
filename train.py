@@ -34,7 +34,7 @@ def train_char(args):
     """ load data """
     print '\tLoading Data...'
     train_corpus, vocab_word, vocab_char, vocab_tag = load_conll_char(path=args.train_data, train=True, vocab_word=vocab_word, vocab_size=args.vocab)
-    dev_corpus, _, _, _ = load_conll_char(path=args.dev_data, train=False, vocab_word=vocab_word)
+    dev_corpus, _, _, _ = load_conll_char(path=args.dev_data, train=False, vocab_word=vocab_word, vocab_char=vocab_char)
     print '\tTrain Sentences: %d  Test Sentences: %d' % (len(train_corpus), len(dev_corpus))
     print '\tVocab size: %d  Char size: %d' % (vocab_word.size(), vocab_char.size())
 

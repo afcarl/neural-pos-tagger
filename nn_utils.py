@@ -24,13 +24,17 @@ def build_shared_zeros(shape):
     )
 
 
-def sample_weights(size_x, size_y, sig=False):
-    W = np.asarray(np.random.uniform(low=-np.sqrt(6.0 / (size_x + size_y)),
-                                     high=np.sqrt(6.0 / (size_x + size_y)),
-                                     size=(size_x, size_y)),
-                   dtype=theano.config.floatX)
-    if sig:
-        W *= 4.0
+def sample_weights(size_x, size_y, size_v=0, size_z=0, sig=False):
+    if size_v == size_z == 0:
+        W = np.asarray(np.random.uniform(low=-np.sqrt(6.0 / (size_x + size_y)),
+                                         high=np.sqrt(6.0 / (size_x + size_y)),
+                                         size=(size_x, size_y)),
+                       dtype=theano.config.floatX)
+    else:
+        W = np.asarray(np.random.uniform(low=-np.sqrt(6.0 / (size_x + size_y)),
+                                         high=np.sqrt(6.0 / (size_x + size_y)),
+                                         size=(size_x, size_y, size_v, size_z)),
+                       dtype=theano.config.floatX)
     return W
 
 
