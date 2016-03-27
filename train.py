@@ -1,256 +1,202 @@
-__author__ = 'hiroki'
-
 import sys
 import time
 import math
+import random
 
-from util import load_conll, load_init_emb, convert_words_into_ids, create_samples, flatten, shared_data, load_conll_char, convert_into_ids
-import nn
-import nn_char
-
+import numpy as np
 import theano
 import theano.tensor as T
-import numpy as np
 
-
-def train_char(args):
-    print '\nNEURAL POS TAGGER START\n'
-
-    print '\tINITIAL EMBEDDING\t%s' % args.init_emb
-    print '\tWORD VECTOR\t\tEmb Dim: %d  Hidden Dim: %d' % (args.emb, args.hidden)
-    print '\tCHARACTER VECTOR\tEmb Dim: %d  Hidden Dim: %d' % (args.c_emb, args.c_hidden)
-    print '\tOPTIMIZATION\t\tMethod: %s  Learning Rate: %f  L2 Reg: %f' % (args.opt, args.lr, args.reg)
-
-    """ load pre-trained embeddings """
-    vocab_word = None
-    init_emb = None
-    if args.init_emb:
-        print '\tLoading Embeddings...'
-        init_emb, vocab_word = load_init_emb(args.init_emb)
-        n_emb = init_emb.shape[1]
-    else:
-        n_emb = args.emb
-
-    """ load data """
-    print '\tLoading Data...'
-    train_corpus, vocab_word, vocab_char, vocab_tag = load_conll_char(path=args.train_data, train=True, vocab_word=vocab_word, vocab_size=args.vocab)
-    dev_corpus, _, _, _ = load_conll_char(path=args.dev_data, train=False, vocab_word=vocab_word, vocab_char=vocab_char)
-    print '\tTrain Sentences: %d  Test Sentences: %d' % (len(train_corpus), len(dev_corpus))
-    print '\tVocab size: %d  Char size: %d' % (vocab_word.size(), vocab_char.size())
-
-    """ converting into ids """
-    print '\tConverting into IDs...'
-    # batches: 1D: n_batch, 2D: [0]=word id 2D matrix, [1]=tag id 2D matrix
-    tr_sample_x, tr_sample_c, tr_sample_b, tr_sample_y = convert_into_ids(train_corpus, vocab_word, vocab_char, vocab_tag)
-    dev_sample_x, dev_sample_c, dev_sample_b, dev_sample_y = convert_into_ids(dev_corpus, vocab_word, vocab_char, vocab_tag)
-
-    """ symbol definition """
-    n_c_emb = args.c_emb
-    window = args.window
-    opt = args.opt
-    lr = args.lr
-    reg = args.reg
-    n_h = args.hidden
-    n_c_h = args.c_hidden
-    n_y = args.tag
-
-    print '\tCompiling Theano Code...'
-    x = T.ivector()
-    c = T.ivector()
-    b = T.ivector()
-    y = T.ivector()
-
-    """ tagger set up """
-    tagger = nn_char.Model(x=x, c=c, b=b, y=y, opt=opt, lr=lr, init_emb=init_emb,
-                           vocab_size=vocab_word.size(), char_size=vocab_char.size(), window=window,
-                           n_emb=n_emb, n_c_emb=n_c_emb, n_h=n_h, n_c_h=n_c_h, n_y=n_y, reg=reg)
-
-    def _train():
-        train_model = theano.function(
-            inputs=[x, c, b, y],
-            outputs=tagger.nll,
-            updates=tagger.updates,
-            mode='FAST_RUN'
-        )
-
-        valid_model = theano.function(
-            inputs=[x, c, b, y],
-            outputs=tagger.errors,
-            mode='FAST_RUN'
-        )
-
-        for epoch in xrange(args.epoch):
-            print '\nEpoch: %d' % (epoch + 1)
-            print '\tBatch Index: ',
-            start = time.time()
-
-            losses = []
-            for index in xrange(len(tr_sample_x)):
-                if index % 100 == 0 and index != 0:
-                    print index,
-                    sys.stdout.flush()
-
-                loss = train_model(tr_sample_x[index], tr_sample_c[index], tr_sample_b[index], tr_sample_y[index])
-                losses.append(loss)
-            avg_loss = np.mean(losses)
-            end = time.time()
-            print '\tTime: %f seconds' % (end - start)
-            print '\tAverage Negative Log Likelihood: %f' % avg_loss
-
-            _dev(valid_model)
-
-    def _dev(model):
-        print '\tBatch Index: ',
-        start = time.time()
-
-        errors = []
-        for index in xrange(len(dev_sample_x)):
-            if index % 100 == 0 and index != 0:
-                print index,
-                sys.stdout.flush()
-
-            error = model(dev_sample_x[index], dev_sample_c[index], dev_sample_b[index], dev_sample_y[index])
-            errors.append(error)
-
-        end = time.time()
-
-        total = 0.0
-        correct = 0
-        for sent in errors:
-            total += len(sent)
-            for y_pred in sent:
-                if y_pred == 0:
-                    correct += 1
-        print '\tTime: %f seconds' % (end - start)
-        print '\tTest Accuracy: %f' % (correct / total)
-
-    _train()
+import io_utils
+import preprocessor
+import nn_word
+import nn_char
 
 
 def train(args):
     print '\nNEURAL POS TAGGER START\n'
 
-    """ load pre-trained embeddings """
-    vocab_word = None
-    init_emb = None
-    if args.init_emb:
-        print >> sys.stderr, 'Loading Embeddings...'
-        assert args.init_emb_words
-        init_emb, vocab_word = load_init_emb(args.init_emb, args.init_emb_words)
-        emb_dim = init_emb.shape[1]
-    else:
-        emb_dim = args.emb
+    print '\tINITIAL EMBEDDING\t%s %s' % (args.word_list, args.emb_list)
+    print '\tWORD\t\t\tEmb Dim: %d  Hidden Dim: %d' % (args.w_emb_dim, args.w_hidden_dim)
+    print '\tCHARACTER\t\tEmb Dim: %d  Hidden Dim: %d' % (args.c_emb_dim, args.c_hidden_dim)
+    print '\tOPTIMIZATION\t\tMethod: %s  Learning Rate: %f\n' % (args.opt, args.lr)
 
     """ load data """
-    print 'Loading Data...'
-    train_corpus, vocab_word_tmp, vocab_tag = load_conll(path=args.train_data, vocab_size=args.vocab)
-    dev_corpus, _, _ = load_conll(path=args.dev_data, train=True)
+    print 'Loading data sets...\n'
+    train_corpus, vocab_word, vocab_char, vocab_tag, max_char_len = load_train_data(args)
+    dev_corpus, dev_vocab_word, dev_vocab_char, dev_vocab_tag, dev_max_char_len = load_dev_data(args)
 
-    if vocab_word is None:
-        vocab_word = vocab_word_tmp
+    if dev_corpus:
+        for w in dev_vocab_word.i2w:
+            if args.vocab_size is None or vocab_word.size() < args.vocab_size:
+                vocab_word.add_word(w)
+        for c in dev_vocab_char.i2w:
+            vocab_char.add_word(c)
+        for t in dev_vocab_tag.i2w:
+            vocab_tag.add_word(t)
+
+    if args.save:
+        io_utils.dump_data(vocab_word, 'vocab_word')
+        io_utils.dump_data(vocab_char, 'vocab_char')
+        io_utils.dump_data(vocab_tag, 'vocab_tag')
+
+    """ load word embeddings """
+    init_w_emb = None
+    if args.emb_list:
+        print '\tLoading pre-trained word embeddings...\n'
+        init_w_emb = io_utils.load_init_emb(args.emb_list, args.word_list, vocab_word)
+        w_emb_dim = init_w_emb.shape[1]
+    else:
+        print '\tUse random-initialized word embeddings...\n'
+        w_emb_dim = args.w_emb_dim
+
+    """ limit data set """
+    train_corpus = train_corpus[:args.data_size]
+    train_corpus.sort(key=lambda a: len(a))
 
     """ converting into ids """
-    print 'Converting into IDs...'
-    # batches: 1D: n_batch, 2D: [0]=word id 2D matrix, [1]=tag id 2D matrix
-    tr_id_x, tr_id_y = convert_words_into_ids(train_corpus, vocab_word, vocab_tag)
-    dev_id_x, dev_id_y = convert_words_into_ids(dev_corpus, vocab_word, vocab_tag)
+    print '\nConverting into IDs...\n'
 
-    """ creating samples """
-    print 'Creating Samples...'
-    # batches: 1D: n_batch, 2D: [0]=word id 2D matrix, [1]=tag id 2D matrix
-    tr_sample_x = create_samples(tr_id_x)
-    tr_sample_y = flatten(tr_id_y)
-    dev_sample_x = create_samples(dev_id_x)
-    dev_sample_y = flatten(dev_id_y)
+    tr_x, tr_c, tr_b, tr_y = preprocessor.convert_into_ids(train_corpus, vocab_word, vocab_char, vocab_tag)
 
-    """ converting into ids """
-    print 'Creating Batches...'
-    train_sample_x, train_sample_y = shared_data(tr_sample_x, tr_sample_y)
-    dev_sample_x, dev_sample_y = shared_data(dev_sample_x, dev_sample_y)
+    if args.dev_data:
+        dev_x, dev_c, dev_b, dev_y = preprocessor.convert_into_ids(dev_corpus, vocab_word, vocab_char, vocab_tag)
+        print '\tTrain Sentences: %d  Dev Sentences: %d' % (len(train_corpus), len(dev_corpus))
+    else:
+        print '\tTrain Sentences: %d' % len(train_corpus)
 
-    """ symbol definition """
-    batch_size = args.batch
-    window = args.window
-    opt = args.opt
-    lr = args.lr
-    reg = args.reg
-
-    w = T.imatrix()
-    t = T.ivector()
+    print '\tWord size: %d  Char size: %d' % (vocab_word.size(), vocab_char.size())
 
     """ tagger set up """
-    tagger = nn.NnTagger(x=w, y=t, opt=opt, lr=lr, vocab_size=vocab_word.size(), emb_dim=emb_dim, window=window,
-                         hidden_dim=args.hidden, tag_num=args.tag, reg=reg)
+    tagger = set_model(args, init_w_emb, w_emb_dim, vocab_word, vocab_char, vocab_tag)
+
+    train_f = theano.function(
+        inputs=tagger.input,
+        outputs=[tagger.nll, tagger.result],
+        updates=tagger.updates,
+        mode='FAST_RUN'
+    )
+
+    dev_f = theano.function(
+        inputs=tagger.input[:-1],
+        outputs=tagger.result,
+        mode='FAST_RUN'
+    )
 
     def _train():
-        index = T.iscalar()
-        train_model = theano.function(
-            inputs=[index],
-            outputs=tagger.nll,
-            updates=tagger.updates,
-            givens={
-                w: train_sample_x[index * batch_size: (index + 1) * batch_size],
-                t: train_sample_y[index * batch_size: (index + 1) * batch_size]
-            },
-            mode='FAST_RUN'
-        )
-
-        valid_model = theano.function(
-            inputs=[index],
-            outputs=tagger.errors,
-            givens={
-                w: dev_sample_x[index * batch_size: (index + 1) * batch_size],
-                t: dev_sample_y[index * batch_size: (index + 1) * batch_size]
-            },
-            mode='FAST_RUN'
-        )
-
-        n_train_batches = train_sample_x.get_value().shape[0] / batch_size
-        print 'Training Batch Samples: %d' % n_train_batches
-        print 'Parameter Optimization Method: %s' % args.opt
-        print 'Vocabulary Size: %d' % vocab_word.size()
+        print '\nTRAINING START\n'
 
         for epoch in xrange(args.epoch):
+            _lr = args.lr / float(epoch+1)
+            indices = range(len(tr_x))
+            random.shuffle(indices)
+
             print '\nEpoch: %d' % (epoch + 1)
-            print '\tBatch Index: ',
+            print '\n\tTrain set'
+            print '\t\tBatch Index: ',
             start = time.time()
 
-            losses = []
-            for b_index in xrange(n_train_batches + 1):
-                if b_index % 100 == 0 and b_index != 0:
-                    print b_index,
+            total = 0.0
+            correct = 0
+            losses = 0.0
+
+            for i, index in enumerate(indices):
+                if i % 100 == 0 and i != 0:
+                    print i,
                     sys.stdout.flush()
-                loss = train_model(b_index)
-                if math.isnan(loss):
-                    print >> sys.stderr, 'Loss is nan, Batch Index: %d' % b_index
-                    exit()
-                losses.append(loss)
-            avg_loss = np.mean(losses)
+
+                if args.model == 'char':
+                    loss, corrects = train_f(tr_x[index], tr_c[index], tr_b[index], tr_y[index], _lr)
+                else:
+                    loss, corrects = train_f(tr_x[index], tr_y[index], _lr)
+
+                assert math.isnan(loss) is False, index
+
+                total += len(corrects)
+                correct += np.sum(corrects)
+                losses += loss
+
             end = time.time()
-            print '\tTime: %f seconds' % (end - start)
-            print '\tAverage Negative Log Likelihood: %f' % avg_loss
+            print '\n\t\tTime: %f seconds' % (end - start)
+            print '\t\tNegative Log Likelihood: %f' % losses
+            print '\t\tAccuracy:%f  Total:%d  Correct:%d' % ((correct / total), total, correct)
 
-            _dev(valid_model)
+            if args.save:
+                io_utils.dump_data(tagger, 'model-%s.epoch-%d' % (args.model, epoch+1))
 
-    def _dev(_valid_model):
-        n_dev_batches = dev_sample_x.get_value().shape[0] / batch_size / args.window
-        print '\tBatch Index: ',
-        errors = []
-        for b_index in xrange(n_dev_batches + 1):
-            if b_index % 100 == 0 and b_index != 0:
-                print b_index,
-                sys.stdout.flush()
-            error = _valid_model(b_index)
-            errors.append(error)
+            _dev(dev_f)
+
+    def _dev(_dev_f):
+        print '\n\tDev set'
+        print '\t\tBatch Index: ',
+        start = time.time()
 
         total = 0.0
         correct = 0
-        for sent in errors:
-            total += len(sent)
-            for y_pred in sent:
-                if y_pred == 0:
-                    correct += 1
-        print '\tTest Accuracy: %f' % (correct / total)
+
+        for index in xrange(len(dev_x)):
+            if index % 100 == 0 and index != 0:
+                print index,
+                sys.stdout.flush()
+
+            if args.model == 'char':
+                corrects = _dev_f(dev_x[index], dev_c[index], dev_b[index], dev_y[index])
+            else:
+                corrects = _dev_f(dev_x[index], dev_y[index])
+
+            total += len(corrects)
+            correct += np.sum(corrects)
+
+        end = time.time()
+
+        print '\n\t\tTime: %f seconds' % (end - start)
+        print '\t\tAccuracy:%f  Total:%d  Correct:%d' % ((correct / total), total, correct)
 
     _train()
+
+
+def load_train_data(args):
+    if args.train_data:
+        return io_utils.load_conll(args.dev_data)
+    else:
+        print 'Input: --train_data path'
+        exit()
+
+
+def load_dev_data(args):
+    if args.dev_data:
+        return io_utils.load_conll(args.dev_data)
+    else:
+        return None, None, None, None, None
+
+
+def set_model(args, init_w_emb, w_emb_dim, vocab_word, vocab_char, vocab_tag):
+    print '\nBuilding a neural model: %s\n' % args.model
+
+    """ neural architecture parameters """
+    c_emb_dim = args.c_emb_dim
+    w_hidden_dim = args.w_hidden_dim
+    c_hidden_dim = args.c_hidden_dim
+    output_dim = vocab_tag.size()
+    window = args.window
+    opt = args.opt
+
+    """ symbol definition """
+    x = T.ivector()
+    c = T.ivector()
+    b = T.ivector()
+    y = T.ivector()
+    lr = T.fscalar('lr')
+
+    if args.model == 'char':
+        return nn_char.Model(name=args.model, w=x, c=c, b=b, y=y, lr=lr,
+                             init_w_emb=init_w_emb, vocab_w_size=vocab_word.size(), vocab_c_size=vocab_char.size(),
+                             w_emb_dim=w_emb_dim, c_emb_dim=c_emb_dim, w_hidden_dim=w_hidden_dim,
+                             c_hidden_dim=c_hidden_dim, output_dim=output_dim,
+                             window=window, opt=opt)
+    else:
+        return nn_word.Model(name=args.model, x=x, y=y, lr=lr,
+                             init_emb=init_w_emb, vocab_size=vocab_word.size(),
+                             emb_dim=w_emb_dim, hidden_dim=w_hidden_dim, output_dim=output_dim,
+                             window=window, opt=opt)
 
